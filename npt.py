@@ -167,7 +167,9 @@ class NetworkMonitorApp:
                 self.disconnection_count += 1  # 增加断网次数
                 self.log_disconnection_start()  # 记录断网开始时间
                 if self.screenshot_enabled.get():
-                    self.capture_screenshot()  # 执行断网截图功能
+                    threading.Thread(
+                        target=self.capture_screenshot
+                    ).start()  # 使用线程截图
         else:  # 网络恢复
             if self.disconnection_start:  # 如果有开始时间，说明网络恢复
                 self.log_disconnection_end()  # 记录断网结束时间
