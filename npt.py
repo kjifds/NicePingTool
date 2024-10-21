@@ -226,8 +226,6 @@ class NetworkMonitorApp:
         screenshot = ImageGrab.grab()  # 获取屏幕截图
         screenshot.save(screenshot_path)  # 保存截图
 
-        messagebox.showinfo("截图保存", f"截图已保存到: {screenshot_path}")
-
 
 if __name__ == "__main__":
     root = tk.Tk()
