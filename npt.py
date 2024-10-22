@@ -17,7 +17,7 @@ def format_duration(seconds):
 class NetworkMonitorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("断网检测工具_v1.0.2")
+        self.root.title("断网检测工具_v1.1.0")
         self.root.geometry("800x600")
         self.root.configure(bg="#f0f0f0")  # 设置背景色
 
@@ -31,6 +31,8 @@ class NetworkMonitorApp:
         self.target_address = "www.baidu.com"
         self.screenshot_enabled = tk.BooleanVar()
         self.save_log_enabled = tk.BooleanVar()
+        self.ignore_small_packet_loss = tk.BooleanVar()  # 添加忽略小丢包的变量
+        self.last_disconnection_time = None  # 记录上次断网时间
 
         # 创建控件
         self.create_widgets()
@@ -65,7 +67,7 @@ class NetworkMonitorApp:
         )
         self.stop_button.pack(side=tk.LEFT, padx=5)
 
-        # 是否启用截图和保存日志复选框
+        # 是否启用截图、保存日志和忽略小丢包复选框
         options_frame = ttk.Frame(self.root, padding="10")
         options_frame.pack(pady=5)
 
@@ -78,6 +80,11 @@ class NetworkMonitorApp:
             options_frame, text="启用保存日志", variable=self.save_log_enabled
         )
         self.save_log_checkbox.pack(side=tk.LEFT, padx=5)
+
+        self.ignore_small_packet_loss_checkbox = ttk.Checkbutton(
+            options_frame, text="忽略小丢包", variable=self.ignore_small_packet_loss
+        )
+        self.ignore_small_packet_loss_checkbox.pack(side=tk.LEFT, padx=5)
 
         # 输出框，显示实时ping命令结果
         self.output_text = scrolledtext.ScrolledText(
@@ -104,6 +111,7 @@ class NetworkMonitorApp:
         self.running = True
         self.output_log = []  # 清空日志
         self.start_time = datetime.now()  # 记录开始时间
+        self.last_disconnection_time = None  # 重置上次断网时间
 
         threading.Thread(target=self.run_ping_command).start()
 
@@ -141,7 +149,7 @@ class NetworkMonitorApp:
                 continue
 
             # 检查是否是断网信息并设置对应的样式
-            if "请求超时" in line or "无法访问目标主机" in line or "常见故障" in line:
+            if "超时" in line or "无法访问" in line or "故障" in line:
                 self.output_text.config(state=tk.NORMAL)  # 允许写入输出框
                 self.output_text.insert(
                     tk.END, line + "\n", "red_bold"
@@ -159,14 +167,16 @@ class NetworkMonitorApp:
             self.check_disconnection(line)  # 检查断网状态
 
     def check_disconnection(self, line):
-        if (
-            "请求超时" in line or "无法访问目标主机" in line or "常见故障" in line
-        ):  # 检测到断网
+        current_time = datetime.now()  # 当前时间
+        if "超时" in line or "无法访问" in line or "故障" in line:  # 检测到断网
             if not self.disconnection_start:  # 如果没有记录开始时间，则设置
-                self.disconnection_start = datetime.now()
+                self.disconnection_start = current_time
                 self.disconnection_count += 1  # 增加断网次数
+                self.last_disconnection_time = current_time  # 更新上次断网时间
                 self.log_disconnection_start()  # 记录断网开始时间
-                if self.screenshot_enabled.get():
+                if self.screenshot_enabled.get() and self.is_significant_disconnection(
+                    current_time
+                ):
                     threading.Thread(
                         target=self.capture_screenshot
                     ).start()  # 使用线程截图
@@ -174,6 +184,13 @@ class NetworkMonitorApp:
             if self.disconnection_start:  # 如果有开始时间，说明网络恢复
                 self.log_disconnection_end()  # 记录断网结束时间
                 self.disconnection_start = None  # 重置开始时间
+
+    def is_significant_disconnection(self, current_time):
+        """判断是否为显著的断网，间隔大于等于2秒"""
+        if self.last_disconnection_time:
+            interval = (current_time - self.last_disconnection_time).total_seconds()
+            return interval >= 2  # 返回间隔是否大于等于2秒
+        return True  # 如果是第一次断网则返回True
 
     def log_disconnection_start(self):
         self.interval_text.config(state=tk.NORMAL)  # 允许写入间隔记录框
@@ -186,17 +203,43 @@ class NetworkMonitorApp:
     def log_disconnection_end(self):
         disconnection_end = datetime.now()  # 记录结束时间
         self.interval_text.config(state=tk.NORMAL)  # 允许写入间隔记录框
-        self.interval_text.insert(
-            tk.END,
-            f"断网结束时间: {disconnection_end.strftime('%Y-%m-%d %H:%M:%S')}\n",
-        )
-        interval = disconnection_end - self.disconnection_start
-        interval_seconds = interval.total_seconds()  # 转换为秒
-        formatted_interval = format_duration(int(interval_seconds))  # 格式化为中文
-        self.interval_text.insert(tk.END, f"断网间隔: {formatted_interval}\n")
-        self.interval_text.insert(
-            tk.END, f"断网次数: {self.disconnection_count}\n\n"
-        )  # 显示断网次数
+
+        # 计算断网间隔并判断是否需要忽略小丢包
+        if self.ignore_small_packet_loss.get():
+            if (disconnection_end - self.disconnection_start).total_seconds() < 2:
+                # 如果间隔小于2秒，则只记录普通丢包
+                self.interval_text.insert(
+                    tk.END, "检测到普通丢包，不记录详细时间。\n\n"
+                )
+            else:
+                # 正常计算断网间隔
+                self.interval_text.insert(
+                    tk.END,
+                    f"断网结束时间: {disconnection_end.strftime('%Y-%m-%d %H:%M:%S')}\n",
+                )
+                interval = disconnection_end - self.disconnection_start
+                interval_seconds = interval.total_seconds()  # 转换为秒
+                formatted_interval = format_duration(
+                    int(interval_seconds)
+                )  # 格式化为中文
+                self.interval_text.insert(tk.END, f"断网间隔: {formatted_interval}\n")
+                self.interval_text.insert(
+                    tk.END, f"断网次数: {self.disconnection_count}\n\n"
+                )  # 显示断网次数
+        else:
+            # 如果未选中忽略小丢包，正常记录
+            self.interval_text.insert(
+                tk.END,
+                f"断网结束时间: {disconnection_end.strftime('%Y-%m-%d %H:%M:%S')}\n",
+            )
+            interval = disconnection_end - self.disconnection_start
+            interval_seconds = interval.total_seconds()  # 转换为秒
+            formatted_interval = format_duration(int(interval_seconds))  # 格式化为中文
+            self.interval_text.insert(tk.END, f"断网间隔: {formatted_interval}\n")
+            self.interval_text.insert(
+                tk.END, f"断网次数: {self.disconnection_count}\n\n"
+            )  # 显示断网次数
+
         self.interval_text.config(state=tk.DISABLED)  # 禁止用户输入
 
     def save_log(self):
